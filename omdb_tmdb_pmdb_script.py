@@ -24,19 +24,26 @@ OMDB_API_KEY = api_keys.get('omdb_key')
 PMDB_API_KEY = api_keys.get('pmdb_key')
 
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
+TMDB_TV_SEARCH_URL = "https://api.themoviedb.org/3/search/tv"
 TMDB_MOVIE_URL = "https://api.themoviedb.org/3/movie"
+TMDB_TV_URL = "https://api.themoviedb.org/3/tv"
 OMDB_URL = "http://www.omdbapi.com/"
 PMDB_RATINGS_URL = "https://publicmetadb.com/api/external/ratings"
 PMDB_MAPPINGS_URL = "https://publicmetadb.com/api/external/mappings"
 
-def search_tmdb(title):
-    """Search for a movie on TMDB"""
+def search_tmdb(title, media_type="movie"):
+    """Search for a movie or TV show on TMDB"""
+    if media_type == "tv":
+        url = TMDB_TV_SEARCH_URL
+    else:
+        url = TMDB_SEARCH_URL
+    
     params = {
         "api_key": TMDB_API_KEY,
         "query": title
     }
     
-    response = requests.get(TMDB_SEARCH_URL, params=params)
+    response = requests.get(url, params=params)
     
     if response.status_code == 200:
         data = response.json()
@@ -45,16 +52,22 @@ def search_tmdb(title):
         print(f"Error searching TMDB: {response.status_code}")
         return []
 
-def get_tmdb_details(tmdb_id):
+def get_tmdb_details(tmdb_id, media_type="movie"):
     """Get detailed info including IMDb ID and rating from TMDB"""
+    # Select the correct base URL
+    if media_type == "tv":
+        base_url = TMDB_TV_URL
+    else:
+        base_url = TMDB_MOVIE_URL
+    
     # Get external IDs
-    external_url = f"{TMDB_MOVIE_URL}/{tmdb_id}/external_ids"
+    external_url = f"{base_url}/{tmdb_id}/external_ids"
     external_params = {"api_key": TMDB_API_KEY}
     
     external_response = requests.get(external_url, params=external_params)
     
-    # Get movie details (includes rating)
-    details_url = f"{TMDB_MOVIE_URL}/{tmdb_id}"
+    # Get details (includes rating)
+    details_url = f"{base_url}/{tmdb_id}"
     details_params = {"api_key": TMDB_API_KEY}
     
     details_response = requests.get(details_url, params=details_params)
@@ -75,12 +88,16 @@ def get_tmdb_details(tmdb_id):
     
     return result
 
-def get_omdb_ratings(imdb_id):
+def get_omdb_ratings(imdb_id, media_type="movie"):
     """Get ratings from OMDb (includes IMDb, Rotten Tomatoes, Metacritic)"""
     params = {
         "apikey": OMDB_API_KEY,
         "i": imdb_id
     }
+    
+    # Add type parameter for OMDb (they use 'series' instead of 'tv')
+    if media_type == "tv":
+        params["type"] = "series"
     
     response = requests.get(OMDB_URL, params=params)
     
@@ -213,14 +230,23 @@ def get_existing_ratings(tmdb_id, media_type="movie"):
         print(f"  Error checking existing ratings: {e}")
         return set()
 
-def display_movie_info(movie, imdb_id, new_ratings, existing_ratings):
+def display_movie_info(item, imdb_id, new_ratings, existing_ratings, media_type="movie"):
     """Display all collected information for verification"""
     print("\n" + "="*70)
-    print("MOVIE INFORMATION")
+    print(f"{media_type.upper()} INFORMATION")
     print("="*70)
-    print(f"Title: {movie['title']}")
-    print(f"Year: {movie.get('release_date', 'Unknown')[:4]}")
-    print(f"TMDB ID: {movie['id']}")
+    
+    # Handle both movie and TV show title fields
+    if media_type == "tv":
+        title = item.get('name', 'Unknown')
+        year = item.get('first_air_date', 'Unknown')[:4]
+    else:
+        title = item.get('title', 'Unknown')
+        year = item.get('release_date', 'Unknown')[:4]
+    
+    print(f"Title: {title}")
+    print(f"Year: {year}")
+    print(f"TMDB ID: {item['id']}")
     print(f"IMDb ID: {imdb_id}")
     
     if existing_ratings:
@@ -291,28 +317,42 @@ def submit_rating(tmdb_id, score, label, media_type="movie"):
         return False
 
 def main():
-    print("=== Movie Data Collector & Submitter ===\n")
+    print("=== Movie/TV Data Collector & Submitter ===\n")
     
-    # Step 1: Search TMDB
-    movie_title = input("Enter movie title to search: ")
-    results = search_tmdb(movie_title)
+    # Step 1: Ask for media type
+    media_type_choice = input("Search for (1) Movie or (2) TV Show? Enter 1 or 2: ").strip()
+    
+    if media_type_choice == "2":
+        media_type = "tv"
+        media_label = "TV show"
+    else:
+        media_type = "movie"
+        media_label = "movie"
+    
+    # Step 2: Search TMDB
+    title = input(f"\nEnter {media_label} title to search: ")
+    results = search_tmdb(title, media_type)
     
     if not results:
-        print("No movies found.")
+        print(f"No {media_label}s found.")
         return
     
     # Display results
-    print("\nSearch Results:")
+    print(f"\nSearch Results:")
     print("-" * 70)
-    for idx, movie in enumerate(results[:10], 1):
-        title = movie.get('title', 'Unknown')
-        year = movie.get('release_date', 'Unknown')[:4]
-        print(f"{idx}. {title} ({year}) - TMDB ID: {movie['id']}")
+    for idx, item in enumerate(results[:10], 1):
+        if media_type == "tv":
+            item_title = item.get('name', 'Unknown')
+            year = item.get('first_air_date', 'Unknown')[:4]
+        else:
+            item_title = item.get('title', 'Unknown')
+            year = item.get('release_date', 'Unknown')[:4]
+        print(f"{idx}. {item_title} ({year}) - TMDB ID: {item['id']}")
     print("-" * 70)
     
-    # Step 2: Select movie
+    # Step 3: Select item
     try:
-        choice = int(input("\nSelect movie number (or 0 to cancel): "))
+        choice = int(input(f"\nSelect {media_label} number (or 0 to cancel): "))
         if choice == 0:
             print("Cancelled.")
             return
@@ -321,26 +361,26 @@ def main():
             print("Invalid selection.")
             return
         
-        selected_movie = results[choice - 1]
-        tmdb_id = selected_movie['id']
+        selected_item = results[choice - 1]
+        tmdb_id = selected_item['id']
         
     except ValueError:
         print("Invalid input.")
         return
     
-    # Step 3: Get IMDb ID and rating from TMDB
+    # Step 4: Get IMDb ID and rating from TMDB
     print(f"\nFetching external IDs and rating from TMDB...")
-    tmdb_data = get_tmdb_details(tmdb_id)
+    tmdb_data = get_tmdb_details(tmdb_id, media_type)
     
     if not tmdb_data or not tmdb_data.get('external_ids') or not tmdb_data['external_ids'].get('imdb_id'):
-        print("Could not find IMDb ID for this movie.")
+        print(f"Could not find IMDb ID for this {media_label}.")
         return
     
     imdb_id = tmdb_data['external_ids']['imdb_id']
     
-    # Step 4: Get ratings from OMDb
+    # Step 5: Get ratings from OMDb
     print(f"Fetching ratings from OMDb...")
-    omdb_data = get_omdb_ratings(imdb_id)
+    omdb_data = get_omdb_ratings(imdb_id, media_type)
     
     if not omdb_data or omdb_data.get('Response') == 'False':
         print("Could not fetch OMDb data.")
@@ -353,9 +393,9 @@ def main():
     if tmdb_rating:
         ratings['TM'] = tmdb_rating
     
-    # Step 5: Check existing mappings in PMDB
+    # Step 6: Check existing mappings in PMDB
     print(f"Checking existing ID mappings in PMDB...")
-    existing_mappings = get_existing_mappings(tmdb_id)
+    existing_mappings = get_existing_mappings(tmdb_id, media_type)
     
     # Check if IMDb mapping already exists
     imdb_mapping_exists = False
@@ -365,9 +405,9 @@ def main():
     else:
         print("No existing IMDb mapping found.")
     
-    # Step 6: Check existing ratings in PMDB
+    # Step 7: Check existing ratings in PMDB
     print(f"Checking existing ratings in PMDB...")
-    existing_labels = get_existing_ratings(tmdb_id)
+    existing_labels = get_existing_ratings(tmdb_id, media_type)
     
     if existing_labels:
         print(f"Found existing ratings: {', '.join(sorted(existing_labels))}")
@@ -380,10 +420,10 @@ def main():
     existing_ratings = {label: score for label, score in ratings.items() 
                         if label.upper() in existing_labels}
     
-    # Step 7: Display everything for verification
-    display_movie_info(selected_movie, imdb_id, new_ratings, existing_ratings)
+    # Step 8: Display everything for verification
+    display_movie_info(selected_item, imdb_id, new_ratings, existing_ratings, media_type)
     
-    # Step 8: Ask about mapping first (only if it doesn't exist)
+    # Step 9: Ask about mapping first (only if it doesn't exist)
     if not imdb_mapping_exists:
         print("=" * 70)
         print("ID MAPPING")
@@ -396,7 +436,7 @@ def main():
         if confirm_mapping == 'yes':
             print("\nSubmitting mapping...")
             print("-" * 70)
-            submit_mapping(tmdb_id, imdb_id)
+            submit_mapping(tmdb_id, imdb_id, media_type)
             print("-" * 70 + "\n")
         else:
             print("Mapping submission skipped.\n")
@@ -407,7 +447,7 @@ def main():
         print(f"TMDB ID {tmdb_id} → IMDb ID {imdb_id} [ALREADY EXISTS]")
         print("=" * 70 + "\n")
     
-    # Step 9: Ask about ratings (only if there's something to submit)
+    # Step 10: Ask about ratings (only if there's something to submit)
     if not new_ratings:
         print("No new ratings to submit - all ratings already exist in PMDB!")
         return
@@ -418,13 +458,13 @@ def main():
         print("Ratings submission cancelled.")
         return
     
-    # Step 10: Submit ratings to PMDB
+    # Step 11: Submit ratings to PMDB
     print("\nSubmitting ratings...")
     print("-" * 70)
     
     # Submit only new ratings
     for label, score in new_ratings.items():
-        submit_rating(tmdb_id, score, label)
+        submit_rating(tmdb_id, score, label, media_type)
     
     print("-" * 70)
     print(f"\n✓ Submitted {len(new_ratings)} new rating(s)!")
