@@ -22,6 +22,7 @@ api_keys = load_api_keys()
 TMDB_API_KEY = api_keys.get('tmdb_key')
 OMDB_API_KEY = api_keys.get('omdb_key')
 PMDB_API_KEY = api_keys.get('pmdb_key')
+TVDB_API_KEY = api_keys.get('tvdb_key')
 
 TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
 TMDB_TV_SEARCH_URL = "https://api.themoviedb.org/3/search/tv"
@@ -30,6 +31,96 @@ TMDB_TV_URL = "https://api.themoviedb.org/3/tv"
 OMDB_URL = "http://www.omdbapi.com/"
 PMDB_RATINGS_URL = "https://publicmetadb.com/api/external/ratings"
 PMDB_MAPPINGS_URL = "https://publicmetadb.com/api/external/mappings"
+TVDB_BASE_URL = "https://api4.thetvdb.com/v4"
+TVDB_LOGIN_URL = f"{TVDB_BASE_URL}/login"
+TVDB_SEARCH_URL = f"{TVDB_BASE_URL}/search"
+
+# Global variable to store TVDB token
+tvdb_token = None
+
+def get_tvdb_token():
+    """Authenticate with TVDB and get bearer token"""
+    global tvdb_token
+    
+    if not TVDB_API_KEY:
+        print("Warning: TVDB API key not found. TVDB features will be disabled.")
+        return None
+    
+    if tvdb_token:
+        return tvdb_token
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "apikey": TVDB_API_KEY
+    }
+    
+    try:
+        response = requests.post(TVDB_LOGIN_URL, headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            data = response.json()
+            tvdb_token = data.get('data', {}).get('token')
+            if tvdb_token:
+                print("✓ TVDB authentication successful")
+                return tvdb_token
+            else:
+                print("Warning: TVDB token not found in response")
+                return None
+        else:
+            print(f"Warning: TVDB authentication failed ({response.status_code})")
+            return None
+    except Exception as e:
+        print(f"Warning: Error authenticating with TVDB: {e}")
+        return None
+
+def search_tvdb_by_imdb(imdb_id):
+    """Search TVDB using IMDb ID"""
+    token = get_tvdb_token()
+    
+    if not token:
+        return None
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    params = {
+        "query": imdb_id,
+        "type": "series"
+    }
+    
+    try:
+        response = requests.get(TVDB_SEARCH_URL, headers=headers, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get('data', [])
+            
+            # Look for exact IMDb match in remote_ids
+            for result in results:
+                remote_ids = result.get('remote_ids', [])
+                for remote_id in remote_ids:
+                    if remote_id.get('sourceName') == 'IMDB' and remote_id.get('id') == imdb_id:
+                        return result
+            
+            # If no exact match, return first result
+            if results:
+                return results[0]
+        else:
+            print(f"  TVDB search returned status {response.status_code}")
+        
+        return None
+    except Exception as e:
+        print(f"  Error searching TVDB: {e}")
+        return None
+
+
+
+
 
 def search_tmdb(title, media_type="movie"):
     """Search for a movie or TV show on TMDB"""
@@ -230,7 +321,7 @@ def get_existing_ratings(tmdb_id, media_type="movie"):
         print(f"  Error checking existing ratings: {e}")
         return set()
 
-def display_movie_info(item, imdb_id, new_ratings, existing_ratings, media_type="movie"):
+def display_movie_info(item, imdb_id, tvdb_id, new_ratings, existing_ratings, media_type="movie"):
     """Display all collected information for verification"""
     print("\n" + "="*70)
     print(f"{media_type.upper()} INFORMATION")
@@ -248,6 +339,8 @@ def display_movie_info(item, imdb_id, new_ratings, existing_ratings, media_type=
     print(f"Year: {year}")
     print(f"TMDB ID: {item['id']}")
     print(f"IMDb ID: {imdb_id}")
+    if tvdb_id and media_type == "tv":
+        print(f"TVDB ID: {tvdb_id}")
     
     if existing_ratings:
         print("\n" + "-"*70)
@@ -268,7 +361,7 @@ def display_movie_info(item, imdb_id, new_ratings, existing_ratings, media_type=
     
     print("="*70 + "\n")
 
-def submit_mapping(tmdb_id, imdb_id, media_type="movie"):
+def submit_mapping(tmdb_id, id_value, id_type, media_type="movie"):
     """Submit ID mapping to PMDB"""
     headers = {
         "Authorization": f"Bearer {PMDB_API_KEY}",
@@ -278,17 +371,17 @@ def submit_mapping(tmdb_id, imdb_id, media_type="movie"):
     payload = {
         "tmdb_id": tmdb_id,
         "media_type": media_type,
-        "id_type": "imdb",
-        "id_value": imdb_id
+        "id_type": id_type,
+        "id_value": id_value
     }
     
     response = requests.post(PMDB_MAPPINGS_URL, headers=headers, json=payload)
     
     if response.status_code in [200, 201]:
-        print(f"✓ Mapping submitted: TMDB {tmdb_id} → IMDb {imdb_id}")
+        print(f"✓ Mapping submitted: TMDB {tmdb_id} → {id_type.upper()} {id_value}")
         return True
     else:
-        print(f"✗ Error submitting mapping: {response.status_code}")
+        print(f"✗ Error submitting {id_type} mapping: {response.status_code}")
         print(f"Response: {response.text}")
         return False
 
@@ -393,19 +486,43 @@ def main():
     if tmdb_rating:
         ratings['TM'] = tmdb_rating
     
-    # Step 6: Check existing mappings in PMDB
+    # Step 6: Get TVDB ID (TV shows only)
+    tvdb_id = None
+    if media_type == "tv":
+        print(f"Fetching TVDB ID...")
+        tvdb_data = search_tvdb_by_imdb(imdb_id)
+        
+        if tvdb_data:
+            tvdb_id = tvdb_data.get('tvdb_id')
+            
+            if tvdb_id:
+                print(f"✓ Found TVDB ID: {tvdb_id}")
+            else:
+                print("  TVDB ID not found in search results")
+        else:
+            print("  Could not find show on TVDB")
+    
+    # Step 7: Check existing mappings in PMDB
     print(f"Checking existing ID mappings in PMDB...")
     existing_mappings = get_existing_mappings(tmdb_id, media_type)
     
     # Check if IMDb mapping already exists
-    imdb_mapping_exists = False
-    if 'imdb' in existing_mappings and imdb_id in existing_mappings['imdb']:
-        imdb_mapping_exists = True
+    imdb_mapping_exists = 'imdb' in existing_mappings and imdb_id in existing_mappings['imdb']
+    if imdb_mapping_exists:
         print(f"Found existing IMDb mapping: {imdb_id}")
     else:
         print("No existing IMDb mapping found.")
     
-    # Step 7: Check existing ratings in PMDB
+    # Check if TVDB mapping already exists
+    tvdb_mapping_exists = False
+    if tvdb_id:
+        tvdb_mapping_exists = 'tvdb' in existing_mappings and str(tvdb_id) in existing_mappings['tvdb']
+        if tvdb_mapping_exists:
+            print(f"Found existing TVDB mapping: {tvdb_id}")
+        else:
+            print("No existing TVDB mapping found.")
+    
+    # Step 8: Check existing ratings in PMDB
     print(f"Checking existing ratings in PMDB...")
     existing_labels = get_existing_ratings(tmdb_id, media_type)
     
@@ -420,34 +537,44 @@ def main():
     existing_ratings = {label: score for label, score in ratings.items() 
                         if label.upper() in existing_labels}
     
-    # Step 8: Display everything for verification
-    display_movie_info(selected_item, imdb_id, new_ratings, existing_ratings, media_type)
+    # Step 9: Display everything for verification
+    display_movie_info(selected_item, imdb_id, tvdb_id, new_ratings, existing_ratings, media_type)
     
-    # Step 9: Ask about mapping first (only if it doesn't exist)
+    # Step 10: Ask about mappings
+    mappings_to_submit = []
+    
     if not imdb_mapping_exists:
+        mappings_to_submit.append(('imdb', imdb_id))
+    
+    if tvdb_id and not tvdb_mapping_exists:
+        mappings_to_submit.append(('tvdb', str(tvdb_id)))
+    
+    if mappings_to_submit:
         print("=" * 70)
-        print("ID MAPPING")
+        print("ID MAPPINGS")
         print("=" * 70)
-        print(f"TMDB ID {tmdb_id} → IMDb ID {imdb_id}")
+        for id_type, id_value in mappings_to_submit:
+            print(f"TMDB ID {tmdb_id} → {id_type.upper()} {id_value}")
         print("=" * 70 + "\n")
         
-        confirm_mapping = input("Submit ID mapping to PMDB? (yes/no): ").lower()
+        confirm_mapping = input("Submit ID mapping(s) to PMDB? (yes/no): ").lower()
         
         if confirm_mapping == 'yes':
-            print("\nSubmitting mapping...")
+            print("\nSubmitting mappings...")
             print("-" * 70)
-            submit_mapping(tmdb_id, imdb_id, media_type)
+            for id_type, id_value in mappings_to_submit:
+                submit_mapping(tmdb_id, id_value, id_type, media_type)
             print("-" * 70 + "\n")
         else:
             print("Mapping submission skipped.\n")
     else:
         print("=" * 70)
-        print("ID MAPPING")
+        print("ID MAPPINGS")
         print("=" * 70)
-        print(f"TMDB ID {tmdb_id} → IMDb ID {imdb_id} [ALREADY EXISTS]")
+        print(f"All ID mappings already exist in PMDB")
         print("=" * 70 + "\n")
     
-    # Step 10: Ask about ratings (only if there's something to submit)
+    # Step 11: Ask about ratings (only if there's something to submit)
     if not new_ratings:
         print("No new ratings to submit - all ratings already exist in PMDB!")
         return
@@ -458,7 +585,7 @@ def main():
         print("Ratings submission cancelled.")
         return
     
-    # Step 11: Submit ratings to PMDB
+    # Step 12: Submit ratings to PMDB
     print("\nSubmitting ratings...")
     print("-" * 70)
     
